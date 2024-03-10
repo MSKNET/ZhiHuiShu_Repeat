@@ -1,13 +1,15 @@
 // ==UserScript==
-// @name         aoguai-智慧树（知到）习惯分平时分问答半自动复读垃圾话生成器
+// @name         aoguai-Misaka13514-智慧树（知到）习惯分平时分问答半自动复读垃圾话生成器
 // @namespace    http://tampermonkey.net/
-// @version      1.1.9.1
+// @version      1.2.0
 // @description  智慧树（知到）习惯分平时分问答半自动复读垃圾话生成器
-// @author       aoguai
-// @copyright    2023, aoguai (https://github.com/aoguai)
+// @author       aoguai, Misaka13514
+// @copyright    2023, aoguai (https://github.com/aoguai), Misaka13514 (https://github.com/Misaka13514)
 // @require      https://unpkg.com/axios/dist/axios.min.js
 // @match        https://qah5.zhihuishu.com/qa.html
 // @grant        GM_xmlhttpRequest
+// @source       https://github.com/MSKNET/ZhiHuiShu_Repeat
+// @connect      api.openai.com
 // @connect      *
 // @license      MIT
 // ==/UserScript==
@@ -18,6 +20,10 @@
 const publish_p = 0; // 进入问答后是否自动点击发表。可改为1或0。1为自动点击发表，0为手动点击发表。默认为0
 const nonsense_p = 0; // 进入问答后自动输入时，是否需要中立与否定回答。可改为0、1、2、3。0为都不需要，1为需要中立回答，2为需要否定回答，3为都需要，默认为0
 const close_p = 0; // 进入问答发表后是否自动关闭问答。（需要配合publish_p实现，仅publish_p开启时有效）可改为1或0。1为是，0为否。默认为0
+const chat_p = 0; // 是否使用 ChatGPT。0为禁用，1为仅在没有回答可复制时启用，2为强制启用。
+const openai_api_key = "sk-xxx";
+const openai_base_url = "https://api.openai.com/v1/"; // 如果修改的话建议同时修改上方 @connect
+const openai_model = "gpt-3.5-turbo"; // 模型："gpt-3.5-turbo"/"gpt-4"等，具体见https://api.openai.com/v1/models。
 
 (function () {
   /**
@@ -70,18 +76,69 @@ const close_p = 0; // 进入问答发表后是否自动关闭问答。（需要�
   }
 
   /**
+   * chatGPT 聊天函数
+   * @param {string} sentence 问题句子
+   * @returns {string} 回答句子
+   */
+  async function chatGPT(prompt) {
+    const url = `${openai_base_url}chat/completions`;
+    const body = JSON.stringify({
+      model: openai_model,
+      messages: [
+        {
+          role: "system",
+          content: "You are a helpful assistant.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+    });
+
+    const response = await new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: url,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openai_api_key}`,
+        },
+        data: body,
+        onload: resolve,
+        onerror: reject,
+      });
+    });
+
+    if (response.status !== 200) {
+      throw new Error("ChatGPT request failed.");
+    }
+
+    const result = JSON.parse(response.responseText);
+    if (
+      result.choices.length > 0 &&
+      result.choices[0].message &&
+      result.choices[0].message.content
+    ) {
+      return result.choices[0].message.content;
+    }
+
+    throw new Error("No generated text found.");
+  }
+
+  /**
    * 垃圾话生成函数
    * @param {string} mode 生成模式
    * @returns {string} 垃圾话
    */
-  function generateTrashTalk(mode) {
+  async function generateTrashTalk(mode) {
     const answerContentElement = document.querySelector(".answer-content");
     const questionElement = answerContentElement
       ? answerContentElement.children[0]
       : null;
     let question = "";
     let ans = "";
-    if (questionElement) {
+    if (questionElement && chat_p !== 2) {
       question = questionElement.innerText;
       ans = question;
     } else {
@@ -90,14 +147,18 @@ const close_p = 0; // 进入问答发表后是否自动关闭问答。（需要�
       );
       if (alternativeQuestionElement) {
         question = alternativeQuestionElement.innerText;
-        ans = question
-          .replace(/\?|。|！|!|？|\.|{是|对}{吗|嘛|么}|什么|/g, "")
-          .replace(/嘛|吗|么/g, "")
-          .replace(/是{否|不是}/g, "是")
-          .replace(/你们|你/g, "我")
-          .replace(/有没有/, "有")
-          .replace(/能不能/, "能")
-          .replace(/[\(|（][\u4E00-\u9FA5A-Za-z0-9_]+[\)|）]/g, "");
+        if (chat_p !== 0) {
+          ans = await chatGPT(question);
+        } else {
+          ans = question
+            .replace(/\?|。|！|!|？|\.|{是|对}{吗|嘛|么}|什么|/g, "")
+            .replace(/嘛|吗|么/g, "")
+            .replace(/是{否|不是}/g, "是")
+            .replace(/你们|你/g, "我")
+            .replace(/有没有/, "有")
+            .replace(/能不能/, "能")
+            .replace(/[\(|（][\u4E00-\u9FA5A-Za-z0-9_]+[\)|）]/g, "");
+        }
       }
     }
     const answer = {
@@ -304,16 +365,14 @@ const close_p = 0; // 进入问答发表后是否自动关闭问答。（需要�
       const btn = document.querySelector(".my-answer-btn");
       if (btn == null) return;
       btn.dispatchEvent(e);
-      setTimeout(() => {
+      setTimeout(async () => {
         const text = document.querySelector("textarea");
         if (!text) return;
-        text.innerText = generateTrashTalk("");
+        text.innerText = await generateTrashTalk("");
         text.dispatchEvent(input);
         binding();
+        setTimeout(publish, 1000);
       }, 200);
-      setTimeout(function () {
-        publish();
-      }, 1000);
     }
     setTimeout(detail, 1000);
     // 在合适的时机调用该函数来添加渲染的按钮样式
